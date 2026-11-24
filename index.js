@@ -17,6 +17,10 @@ const CSS = `
 .qrWarn{color:#ffd34f;font-size:12px;min-height:16px}
 .qrSw{width:26px;height:26px;border:2px solid #000;cursor:var(--cp,pointer);padding:0}
 .qrSw.on{outline:2px solid #fff;outline-offset:1px}
+.qrHeadBtns{margin-left:auto;display:flex;gap:6px;flex-wrap:wrap}
+.qrHeadBtns .btn{width:auto;margin:0}
+.qrRead{border:2px solid var(--line);padding:8px;margin-bottom:10px;display:flex;flex-direction:column;gap:6px}
+.qrRead pre{margin:0;white-space:pre-wrap;word-break:break-all;font:13px monospace;color:#fff;max-height:140px;overflow:auto}
 .qrRecent{display:flex;flex-direction:column;gap:4px;margin-top:6px}
 .qrRecent .btn{width:100%;margin:0;text-align:left;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;padding:4px 8px}
 `;
@@ -37,6 +41,25 @@ const dataCodewords = (v, e) => Math.floor(rawModules(v) / 8) - ECC_PER_BLOCK[e]
 const alignPos = v => { if (v === 1) return []; const n = Math.floor(v / 7) + 2, size = v * 4 + 17, step = Math.floor((v * 8 + n * 3 + 5) / (n * 4 - 4)) * 2, r = []; for (let p = size - 7; r.length < n - 1; p -= step) r.unshift(p); return [6, ...r]; };
 const gmul = (x, y) => { let z = 0; for (let i = 7; i >= 0; i--) { z = (z << 1) ^ ((z >>> 7) * 0x11d); z ^= ((y >>> i) & 1) * x; } return z & 255; };
 function rsDivisor(deg) { const r = Array(deg).fill(0); r[deg - 1] = 1; let root = 1; for (let i = 0; i < deg; i++) { for (let j = 0; j < deg; j++) { r[j] = gmul(r[j], root); if (j + 1 < deg) r[j] ^= r[j + 1]; } root = gmul(root, 2); } return r; }
+const GEXP = [], GLOG = []; for (let i = 0, x = 1; i < 255; i++) { GEXP[i] = x; GLOG[x] = i; x = gmul(x, 2); }
+const gdiv = (a, b) => a ? GEXP[(GLOG[a] - GLOG[b] + 255) % 255] : 0, gpow = e => GEXP[((e % 255) + 255) % 255];
+const peval = (p, x) => { let r = 0; for (let i = p.length - 1; i >= 0; i--) r = gmul(r, x) ^ p[i]; return r; };  // p : degrés croissants
+function rsCorrect(b, ecc) {  // b : un bloc (données puis correction), corrigé sur place ; faux si trop abîmé
+  const n = b.length, S = []; for (let j = 0; j < ecc; j++) { let v = 0; for (const c of b) v = gmul(v, gpow(j)) ^ c; S.push(v); }
+  if (S.every(v => !v)) return true;
+  let C = [1], B = [1], L = 0, m = 1, bb = 1;
+  for (let k = 0; k < ecc; k++) { let d = S[k]; for (let i = 1; i <= L; i++) d ^= gmul(C[i] || 0, S[k - i]);
+    if (!d) { m++; continue; }
+    const T = C.slice(), f = gdiv(d, bb); for (let i = 0; i < B.length; i++) C[i + m] = (C[i + m] || 0) ^ gmul(f, B[i]);
+    if (2 * L <= k) { L = k + 1 - L; B = T; bb = d; m = 1; } else m++; }
+  const pos = []; for (let p = 0; p < n; p++) if (!peval(C, gpow(-p))) pos.push(p);
+  if (pos.length !== L || !L) return false;
+  const Om = []; for (let i = 0; i < ecc; i++) { let v = 0; for (let j = 0; j <= i; j++) v ^= gmul(S[j], C[i - j] || 0); Om.push(v); }
+  const dC = C.map((c, i) => i % 2 ? c : 0).slice(1);
+  for (const p of pos) { const xi = gpow(-p), den = peval(dC, xi); if (!den) return false; b[n - 1 - p] ^= gmul(gpow(p), gdiv(peval(Om, xi), den)); }
+  for (let j = 0; j < ecc; j++) { let v = 0; for (const c of b) v = gmul(v, gpow(j)) ^ c; if (v) return false; }
+  return true;
+}
 function rsRemainder(data, div) { const r = div.map(() => 0); for (const b of data) { const f = b ^ r.shift(); r.push(0); div.forEach((c, i) => r[i] ^= gmul(c, f)); } return r; }
 const MASKS = [(x, y) => (x + y) % 2 === 0, (x, y) => y % 2 === 0, x => x % 3 === 0, (x, y) => (x + y) % 3 === 0, (x, y) => (Math.floor(x / 3) + Math.floor(y / 2)) % 2 === 0,
   (x, y) => x * y % 2 + x * y % 3 === 0, (x, y) => (x * y % 2 + x * y % 3) % 2 === 0, (x, y) => ((x + y) % 2 + x * y % 3) % 2 === 0];
@@ -104,11 +127,68 @@ function decode(m) {
   const {nb, ecc, nShort, shortLen} = blocksLayout(v, e), blocks = Array.from({length: nb}, (_, j) => []); let k = 0;
   for (let i = 0; i < shortLen + 1; i++) for (let j = 0; j < nb; j++) { if (i === shortLen - ecc && j < nShort) continue; if (k < raw) blocks[j].push(cw[k++]); }
   const div = rsDivisor(ecc), data = [];
-  for (const b of blocks) { const d = b.slice(0, b.length - ecc), r = b.slice(b.length - ecc); if (rsRemainder(d, div).join() !== r.join()) throw new Error('Reed-Solomon faux'); data.push(...d); }
-  const bit = i => data[i >>> 3] >>> (7 - (i & 7)) & 1, num = (at, len) => { let r = 0; for (let i = 0; i < len; i++) r = r << 1 | bit(at + i); return r; };
-  if (num(0, 4) !== 4) throw new Error('mode inconnu');
-  const cl = v < 10 ? 8 : 16, n = num(4, cl), out = []; for (let i = 0; i < n; i++) out.push(num(4 + cl + i * 8, 8));
-  return {text: new TextDecoder().decode(new Uint8Array(out)), ecl, mask: mk};
+  let fixed = 0;
+  for (const b of blocks) { const d = b.slice(0, b.length - ecc), r = b.slice(b.length - ecc); if (rsRemainder(d, div).join() !== r.join()) { if (!rsCorrect(b, ecc)) throw new Error('Reed-Solomon faux'); fixed++; } data.push(...b.slice(0, b.length - ecc)); }
+  const bits = data.length * 8, bit = i => data[i >>> 3] >>> (7 - (i & 7)) & 1, num = (at, len) => { let r = 0; for (let i = 0; i < len; i++) r = r << 1 | bit(at + i); return r; };
+  const AN = '0123456789ABCDEFGHIJKLMNOPQRSTUVWXYZ $%*+-./:', out = []; let at = 0;
+  while (at + 4 <= bits) { const mode = num(at, 4); at += 4; if (!mode) break;
+    if (mode === 7) { at += 8; continue; }  // ECI : le jeu de caractères, on garde l'UTF-8
+    const cl = mode === 1 ? (v < 10 ? 10 : v < 27 ? 12 : 14) : mode === 2 ? (v < 10 ? 9 : v < 27 ? 11 : 13) : mode === 4 ? (v < 10 ? 8 : 16) : 0;
+    if (!cl) throw new Error('mode inconnu'); let n = num(at, cl); at += cl;
+    if (mode === 4) { for (let i = 0; i < n; i++, at += 8) out.push(num(at, 8)); }
+    else if (mode === 2) { for (; n >= 2; n -= 2, at += 11) { const x = num(at, 11); out.push(AN.charCodeAt(x / 45 | 0), AN.charCodeAt(x % 45)); } if (n) { out.push(AN.charCodeAt(num(at, 6))); at += 6; } }
+    else { for (; n >= 3; n -= 3, at += 10) out.push(...String(num(at, 10)).padStart(3, '0').split('').map(c => c.charCodeAt(0))); if (n) { const k = n === 2 ? 7 : 4; out.push(...String(num(at, k)).padStart(n, '0').split('').map(c => c.charCodeAt(0))); at += k; } } }
+  return {text: new TextDecoder().decode(new Uint8Array(out)), ecl, mask: mk, fixed};
+}
+// ---------- le lecteur : une image -> le texte du QR code ----------
+// les trois carrés (motif 1:1:3:1:1 en ligne et en colonne), puis la grille posée entre eux (droite ou tournée, pas en perspective)
+function qrScan(img) {
+  const {width: w, height: h, data: px} = img, gray = new Uint8Array(w * h), hist = new Array(256).fill(0);
+  for (let i = 0; i < w * h; i++) { const v = px[i * 4 + 3] < 128 ? 255 : (px[i * 4] * 299 + px[i * 4 + 1] * 587 + px[i * 4 + 2] * 114) / 1000 | 0; gray[i] = v; hist[v]++; }
+  let sum = 0, sumB = 0, wB = 0, best = 0, t = 128; for (let i = 0; i < 256; i++) sum += i * hist[i];
+  for (let i = 0; i < 256; i++) { wB += hist[i]; if (!wB) continue; const wF = w * h - wB; if (!wF) break; sumB += i * hist[i]; const mB = sumB / wB, mF = (sum - sumB) / wF, b = wB * wF * (mB - mF) ** 2; if (b > best) { best = b; t = i; } }
+  for (const inv of [false, true]) { const bin = new Uint8Array(w * h); for (let i = 0; i < w * h; i++) bin[i] = (gray[i] <= t) !== inv ? 1 : 0;
+    const r = qrFromBin(bin, w, h); if (r) return r; }
+  return null;
+}
+function qrFromBin(bin, w, h) {
+  const at = (x, y) => bin[y * w + x], ok = r => { const tot = r[0] + r[1] + r[2] + r[3] + r[4]; if (tot < 7) return 0; const m = tot / 7, v = m * .7; return Math.abs(r[0] - m) < v && Math.abs(r[1] - m) < v && Math.abs(r[2] - 3 * m) < 3 * v && Math.abs(r[3] - m) < v && Math.abs(r[4] - m) < v ? m : 0; };
+  const cross = (cx, cy, dx, dy, max) => {  // les cinq bandes autour du centre, le long d'une direction ; rend [centre, module]
+    const r = [0, 0, 0, 0, 0], inb = (x, y) => x >= 0 && y >= 0 && x < w && y < h; let x = cx, y = cy;
+    while (inb(x, y) && at(x, y)) { r[2]++; x -= dx; y -= dy; } while (inb(x, y) && !at(x, y) && r[1] <= max) { r[1]++; x -= dx; y -= dy; } while (inb(x, y) && at(x, y) && r[0] <= max) { r[0]++; x -= dx; y -= dy; }
+    x = cx + dx; y = cy + dy; let fw = 0; while (inb(x, y) && at(x, y)) { r[2]++; fw++; x += dx; y += dy; } while (inb(x, y) && !at(x, y) && r[3] <= max) { r[3]++; x += dx; y += dy; } while (inb(x, y) && at(x, y) && r[4] <= max) { r[4]++; x += dx; y += dy; }
+    const m = ok(r); return m ? [(dx ? cx : cy) + fw + 1 - r[2] / 2, m] : null; };
+  const cands = [];
+  for (let y = 0; y < h; y++) { const runs = []; let c = at(0, y), st = 0;
+    for (let x = 1; x <= w; x++) if (x === w || at(x, y) !== c) { runs.push([c, x - st, st]); if (x < w) { c = at(x, y); st = x; } }
+    for (let i = 0; i + 4 < runs.length; i++) { if (!runs[i][0]) continue; const m = ok([0, 1, 2, 3, 4].map(k => runs[i + k][1])); if (!m) continue;
+      const cx = Math.floor(runs[i + 2][2] + runs[i + 2][1] / 2), v = cross(cx, y, 0, 1, m * 4); if (!v) continue;
+      const hz = cross(cx, Math.floor(v[0]), 1, 0, m * 4); if (!hz) continue;
+      const p = {x: hz[0], y: v[0], m: (m + v[1] + hz[1]) / 3, n: 1}, q = cands.find(q => Math.hypot(q.x - p.x, q.y - p.y) < p.m * 2 && Math.abs(q.m - p.m) < p.m * .5);
+      if (q) { q.x = (q.x * q.n + p.x) / (q.n + 1); q.y = (q.y * q.n + p.y) / (q.n + 1); q.m = (q.m * q.n + p.m) / (q.n + 1); q.n++; } else cands.push(p); } }
+  const F = cands.filter(c => c.n >= 2).sort((a, b) => b.n - a.n).slice(0, 12), tri = [];
+  for (let i = 0; i < F.length; i++) for (let j = i + 1; j < F.length; j++) for (let k = j + 1; k < F.length; k++) for (const [B, A, C] of [[F[i], F[j], F[k]], [F[j], F[i], F[k]], [F[k], F[i], F[j]]]) {
+    const a = [A.x - B.x, A.y - B.y], c = [C.x - B.x, C.y - B.y], la = Math.hypot(...a), lc = Math.hypot(...c), cos = Math.abs(a[0] * c[0] + a[1] * c[1]) / (la * lc), ms = [A.m, B.m, C.m];
+    if (Math.abs(la - lc) / Math.max(la, lc) > .15 || cos > .15 || Math.max(...ms) > Math.min(...ms) * 1.4) continue;
+    const cr = a[0] * c[1] - a[1] * c[0]; tri.push({B, R: cr > 0 ? A : C, D: cr > 0 ? C : A, score: Math.abs(la - lc) / la + cos}); }
+  tri.sort((p, q) => p.score - q.score);
+  for (const {B, R, D} of tri.slice(0, 6)) {
+    const mm = (B.m + R.m + D.m) / 3, d = (Math.hypot(R.x - B.x, R.y - B.y) + Math.hypot(D.x - B.x, D.y - B.y)) / 2 / mm + 7, v0 = Math.round((d - 17) / 4);
+    for (const v of [v0, v0 - 1, v0 + 1]) { if (v < 1 || v > 40) continue; const size = v * 4 + 17, k = size - 7, m = [];
+      for (let y = 0; y < size; y++) { const row = []; for (let x = 0; x < size; x++) { const u = (x - 3) / k, t = (y - 3) / k, X = Math.round(B.x + u * (R.x - B.x) + t * (D.x - B.x) - .5), Y = Math.round(B.y + u * (R.y - B.y) + t * (D.y - B.y) - .5); row.push(X >= 0 && Y >= 0 && X < w && Y < h && !!at(X, Y)); } m.push(row); }
+      try { return {...decode(m), version: v}; } catch {} } }
+  return null;
+}
+// ce que dit le texte lu : Wi-Fi, contact, e-mail, SMS, position, lien ou texte
+function parseRead(t) {
+  let m;
+  if (/^WIFI:/i.test(t)) { const g = k => ((t.match(new RegExp('[:;]' + k + ':((?:\\\\.|[^;])*)')) || [])[1] || '').replace(/\\(.)/g, '$1'); return ['wifi', {ssid: g('S'), pass: g('P'), sec: g('T') || 'nopass', hidden: g('H') === 'true'}]; }
+  if (/^BEGIN:VCARD/i.test(t)) { const g = k => ((t.match(new RegExp('^' + k + '[^:\n]*:(.*)$', 'mi')) || [])[1] || '').trim(); return ['contact', {name: g('FN'), tel: g('TEL'), email: g('EMAIL'), org: g('ORG'), web: g('URL')}]; }
+  if ((m = /^mailto:([^?]*)\??(.*)$/i.exec(t))) { const q = new URLSearchParams(m[2]); return ['mail', {to: decodeURIComponent(m[1]), subject: q.get('subject') || '', body: q.get('body') || ''}]; }
+  if ((m = /^SMSTO:([^:]*):?([\s\S]*)$/i.exec(t))) return ['sms', {tel: m[1], body: m[2]}];
+  if ((m = /^geo:(-?[\d.]+),(-?[\d.]+)/i.exec(t))) return ['geo', {lat: m[1], lon: m[2]}];
+  if (/^https?:\/\/\S+$/i.test(t)) return ['url', {url: t}];
+  return ['text', {text: t}];
 }
 // ---------- les contenus ----------
 const esc = s => s.replace(/([\\;,:"])/g, '\\$1');
@@ -133,16 +213,20 @@ export default async function (ctx) {
   // vérification : les capacités connues de la norme, et l'aller-retour encode -> décode sur plusieurs tailles, niveaux et masques
   { console.assert(dataCodewords(1, 0) === 19 && dataCodewords(1, 3) === 9 && dataCodewords(10, 1) === 216 && dataCodewords(40, 0) === 2956 && dataCodewords(40, 3) === 1276 && rawModules(40) === 29648, 'qraft : capacités');
     const tests = [['Bonjour !', 'M', -1], ['https://neodex.app/é', 'L', 3], ['x'.repeat(300), 'H', -1], ['WIFI:T:WPA;S:Maison;P:abc;;', 'Q', 6], ['∑ '.repeat(500), 'L', -1]];
+    { const q = encode('Correction !', 'M'), d = decode(q.modules.map((r, y) => r.map((c, x) => (y >= 9 && y <= 11 && x >= 9 && x <= 11) ? !c : c))); console.assert(d.text === 'Correction !' && d.fixed > 0, 'qraft : correction'); }
     console.assert(tests.every(([t, e, mk]) => { const q = encode(t, e, mk), d = decode(q.modules); return d.text === t && d.ecl === e && (mk < 0 || d.mask === mk); }), 'qraft : aller-retour'); }
   let data = null; try { data = await ctx.folder.read('qraft'); } catch {}
-  const st = {type: data?.type || 'url', fields: data?.fields || {url: 'https://github.com/NDesumeur'}, ecl: data?.ecl || 'M', fg: data?.fg || '#000000', bg: data?.bg || '#ffffff', margin: data?.margin ?? 4, scale: data?.scale || 8, recent: data?.recent || []};
+  const st = {type: data?.type || 'url', fields: data?.fields || {url: 'https://github.com/NDesumeur'}, ecl: data?.ecl || 'M', fg: data?.fg || '#000000', bg: data?.bg || '#ffffff', margin: data?.margin ?? 4, scale: data?.scale || 8, recent: data?.recent || [], dots: data?.dots || 'carre', logo: data?.logo || ''};
   let saveT = 0; const save = () => { clearTimeout(saveT); saveT = setTimeout(() => { const f = {...st.fields}; delete f.pass; ctx.folder.write('qraft', {...st, fields: f}).catch(() => {}); }, 500); };  // le mot de passe Wi-Fi n'est jamais enregistré
   // ---------- l'interface ----------
   view.innerHTML = '';
   const wrap = el('div', 'appWrap'), head = el('div', 'agHead'), lay = el('div', 'qrGrid'), left = el('div', 'sysCard px'), right = el('div', 'sysCard px');
-  head.append(el('span', 'label', 'Qraft · QR codes')); lay.append(left, right); wrap.append(head, lay); view.append(wrap);
+  const hb = el('div', 'qrHeadBtns'), rScr = el('button', 'btn px main', 'LIRE À L\'ÉCRAN'), rImg = el('button', 'btn px', 'LIRE UNE IMAGE…'), fImg = el('input'); fImg.type = 'file'; fImg.accept = 'image/*'; fImg.hidden = true;
+  rScr.title = 'NeoDex se cache un instant et cherche un QR code sur ton écran'; rImg.title = 'Une image ou une capture enregistrée (ou colle une image : Ctrl+V)';
+  hb.append(rScr, rImg, fImg); head.append(el('span', 'label', 'Qraft · QR codes'), hb); lay.append(left, right); wrap.append(head, lay); view.append(wrap);
   const types = el('div', 'qrTypes'), form = el('div'), opts = el('div'), recentBox = el('div', 'qrRecent');
-  left.append(el('span', 'label', 'Contenu'), types, form, el('span', 'label', 'Réglages'), opts, el('span', 'label', 'Récents'), recentBox);
+  const readBox = el('div', 'qrRead'); readBox.hidden = true;
+  left.append(readBox, el('span', 'label', 'Contenu'), types, form, el('span', 'label', 'Réglages'), opts, el('span', 'label', 'Récents'), recentBox);
   const can = el('canvas', 'qrCan'), g = can.getContext('2d'), info = el('div', 'qrInfo'), warn = el('div', 'qrWarn'), exp = el('div', 'qrRow');
   can.id = 'qr_canvas'; info.id = 'qr_info';
   const png = el('button', 'btn px main', 'PNG'), svg = el('button', 'btn px', 'SVG'), cp = el('button', 'btn px', 'Copier l\'image'), keep = el('button', 'btn px', '★ Garder');
@@ -175,32 +259,87 @@ export default async function (ctx) {
     for (const v of [4, 6, 8, 10, 12, 16, 20]) { const o = el('option', '', v + ' px'); o.value = v; o.selected = v === st.scale; sc.append(o); }
     mg.onchange = () => { st.margin = +mg.value; save(); render(); }; sc.onchange = () => { st.scale = +sc.value; save(); render(); };
     r4.append(el('span', 'hint', 'Marge (modules)'), mg, el('span', 'hint', 'Taille d\'un module'), sc);
-    opts.append(r1, sw('fg', 'Encre'), sw('bg', 'Fond'), r4);
+    const r5 = el('div', 'qrRow'); r5.append(el('span', 'hint', 'Points'));
+    for (const [k, t] of [['carre', 'Carrés'], ['rond', 'Ronds'], ['arrondi', 'Arrondis']]) { const b = el('button', 'btn px' + (st.dots === k ? ' main' : ''), t); b.dataset.dots = k; b.onclick = () => { st.dots = k; save(); drawOpts(); render(); }; r5.append(b); }
+    const r6 = el('div', 'qrRow'), lp = el('button', 'btn px', st.logo ? 'CHANGER LE LOGO…' : 'LOGO AU CENTRE…'), lf = el('input'); lf.type = 'file'; lf.accept = 'image/*'; lf.hidden = true;
+    lp.onclick = () => lf.click(); lf.onchange = async () => { const f = lf.files[0]; if (!f) return; const i = new Image(); i.src = URL.createObjectURL(f); try { await i.decode(); } catch { return toast('Image illisible'); }
+      const k = Math.min(1, 160 / Math.max(i.naturalWidth, i.naturalHeight)), c = document.createElement('canvas'); c.width = Math.max(1, Math.round(i.naturalWidth * k)); c.height = Math.max(1, Math.round(i.naturalHeight * k)); c.getContext('2d').drawImage(i, 0, 0, c.width, c.height);
+      st.logo = c.toDataURL('image/png'); save(); drawOpts(); render(); };
+    r6.append(el('span', 'hint', 'Logo'), lp, lf);
+    if (st.logo) { const rm = el('button', 'btn px', 'RETIRER'); rm.onclick = () => { st.logo = ''; save(); drawOpts(); render(); }; r6.append(rm); }
+    opts.append(r1, sw('fg', 'Encre'), sw('bg', 'Fond'), r4, r5, r6);
   }
   function drawRecent() {
     recentBox.replaceChildren(...(st.recent.length ? st.recent.map(r => { const b = el('button', 'btn px', r.p.replace(/\n/g, ' · ')); b.translate = false; b.title = r.p; b.onclick = () => { st.type = r.type; st.fields = {...r.fields}; save(); drawTypes(); drawForm(); render(); }; return b; }) : [el('p', 'hint', '★ Garder ajoute le QR code ici (sauf le Wi-Fi, pour ne pas garder le mot de passe).')]));
   }
   function render() {
     payload = TYPES[st.type][2](st.fields) || '';
-    cur = payload ? encode(payload, st.ecl) : null;
+    cur = payload ? encode(payload, st.logo ? 'H' : st.ecl) : null;
     const total = cur ? cur.size + 2 * st.margin : 21, px = cur ? total * st.scale : 210;
     can.width = px; can.height = px; g.fillStyle = st.bg; g.fillRect(0, 0, px, px);
     warn.textContent = '';
     if (!payload) { info.replaceChildren(el('span', '', 'Écris quelque chose pour fabriquer le QR code.')); return; }
     if (!cur) { info.replaceChildren(el('span', '', 'Trop long pour un QR code : 2953 octets au plus (niveau L).')); return; }
-    g.fillStyle = st.fg; cur.modules.forEach((r, y) => r.forEach((c, x) => { if (c) g.fillRect((x + st.margin) * st.scale, (y + st.margin) * st.scale, st.scale, st.scale); }));
+    paint(g, cur, st.scale);
+    const reread = qrCheck();
     const L1 = lum(st.fg), L2 = lum(st.bg), ratio = (Math.max(L1, L2) + .05) / (Math.min(L1, L2) + .05);
     if (L1 > L2) warn.textContent = 'Encre plus claire que le fond : beaucoup de lecteurs ne liront pas ce code.';
     else if (ratio < 4) warn.textContent = 'Peu de contraste entre l\'encre et le fond : la lecture risque d\'échouer.';
     else if (st.margin < 2) warn.textContent = 'Sans marge, le code est plus dur à lire : garde au moins 2 modules (4 conseillés).';
+    else if (st.logo && !reread) warn.textContent = 'Avec ce logo, le code ne se relit pas : il cache trop de points.';
     const pct = Math.round(cur.used / cur.cap * 100);
-    info.replaceChildren(...[['Version', cur.version + ' (' + cur.size + '×' + cur.size + ')'], ['Correction', cur.ecl], ['Masque', cur.mask], ['Contenu', cur.used + ' / ' + cur.cap + ' octets (' + pct + ' %)'], ['Image', px + '×' + px + ' px']].flatMap(([k, v]) => { const b = el('b', '', String(v)); b.translate = false; return [el('span', '', k), ' : ', b, el('br')]; }));
+    info.replaceChildren(...[['Version', cur.version + ' (' + cur.size + '×' + cur.size + ')'], ['Correction', cur.ecl + (st.logo ? ' (logo)' : '')], ...(st.logo ? [['Relecture', reread ? 'OK' : 'ÉCHEC']] : []), ['Masque', cur.mask], ['Contenu', cur.used + ' / ' + cur.cap + ' octets (' + pct + ' %)'], ['Image', px + '×' + px + ' px']].flatMap(([k, v]) => { const b = el('b', '', String(v)); b.translate = false; return [el('span', '', k), ' : ', b, el('br')]; }));
   }
+  // les points : les trois carrés restent carrés (les lecteurs s'y repèrent) ; le logo couvre au plus 22 % de la largeur, sur un fond net
+  const inFinder = (x, y, n) => (x < 7 && y < 7) || (x >= n - 7 && y < 7) || (x < 7 && y >= n - 7);
+  const logoBox = q => { const n = q.size, k = Math.round(n * .22) | 1; return {a: (n - k) / 2 - 1, k: k + 2}; };
+  let logoImg = null, logoSrc = '';
+  function paint(c, q, sc) {
+    const n = q.size, lb = st.logo ? logoBox(q) : null; c.fillStyle = st.fg;
+    q.modules.forEach((r, y) => r.forEach((on, x) => { if (!on || (lb && x >= lb.a && x < lb.a + lb.k && y >= lb.a && y < lb.a + lb.k)) return; const X = (x + st.margin) * sc, Y = (y + st.margin) * sc;
+      if (st.dots === 'carre' || inFinder(x, y, n)) c.fillRect(X, Y, sc, sc);
+      else if (st.dots === 'rond') { c.beginPath(); c.arc(X + sc / 2, Y + sc / 2, sc * .45, 0, 7); c.fill(); }
+      else { c.beginPath(); c.roundRect(X + sc * .05, Y + sc * .05, sc * .9, sc * .9, sc * .3); c.fill(); } }));
+    if (lb && logoImg?.complete && logoImg.naturalWidth) { const s2 = lb.k * sc, X = (lb.a + st.margin) * sc, f = Math.min(1, s2 * .86 / Math.max(logoImg.naturalWidth, logoImg.naturalHeight)), lw = logoImg.naturalWidth * f, lh = logoImg.naturalHeight * f;
+      c.fillStyle = st.bg; c.fillRect(X, X, s2, s2); c.drawImage(logoImg, X + (s2 - lw) / 2, X + (s2 - lh) / 2, lw, lh); }
+  }
+  function qrCheck() {  // le code dessiné se relit-il ? (avec un logo seulement : à 4 px par module, c'est rapide)
+    if (!st.logo || !cur) return true;
+    if (logoSrc !== st.logo) { logoSrc = st.logo; logoImg = new Image(); logoImg.onload = () => render(); logoImg.src = st.logo; return true; }
+    const c = document.createElement('canvas'), n = cur.size + 2 * Math.max(2, st.margin); c.width = c.height = n * 4; const x = c.getContext('2d'); x.fillStyle = st.bg; x.fillRect(0, 0, c.width, c.height);
+    const m0 = st.margin; st.margin = Math.max(2, m0); paint(x, cur, 4); st.margin = m0;
+    return qrScan(x.getImageData(0, 0, c.width, c.height))?.text === payload;
+  }
+  // lire : l'écran (autorisation « Ton écran »), une image choisie ou collée
+  async function readImage(src) {
+    const i = new Image(); i.src = src; try { await i.decode(); } catch { return toast('Image illisible'); }
+    const c = document.createElement('canvas'); c.width = i.naturalWidth; c.height = i.naturalHeight; const x = c.getContext('2d', {willReadFrequently: true}); x.drawImage(i, 0, 0);
+    const r = qrScan(x.getImageData(0, 0, c.width, c.height)); if (!r) return toast('Aucun QR code trouvé'), null;
+    showRead(r.text); return r;
+  }
+  function showRead(t) {
+    const pre = el('pre', '', t), row = el('div', 'qrRow'), copy = el('button', 'btn px main', 'COPIER'), edit = el('button', 'btn px', 'MODIFIER ICI'), close = el('button', 'btn px', '✕'); pre.translate = false;
+    copy.onclick = () => navigator.clipboard.writeText(t).then(() => toast('Texte copié'));
+    edit.onclick = () => { const [type, fields] = parseRead(t); st.type = type; st.fields = fields; save(); drawTypes(); drawForm(); render(); toast('Le code lu est dans le formulaire'); };
+    close.onclick = () => { readBox.hidden = true; };
+    row.append(copy); if (/^https?:\/\/\S+$/i.test(t)) { const op = el('button', 'btn px', 'OUVRIR LE LIEN'); op.onclick = () => ctx.host.newTab(t); row.append(op); } row.append(edit, close);
+    readBox.replaceChildren(el('span', 'label', 'QR code lu'), pre, row); readBox.hidden = false; toast('QR code lu');
+  }
+  rScr.onclick = async () => { let shot; try { shot = await ctx.neo.screenCapture(); } catch (e) { return toast('Capture de l\'écran impossible : ' + e.message.replace(/^.*Error: /, '')); } if (shot) readImage(shot); };
+  rImg.onclick = () => fImg.click();
+  fImg.onchange = () => { const f = fImg.files[0]; fImg.value = ''; if (f) readImage(URL.createObjectURL(f)); };
+  view.addEventListener('paste', e => { if (/INPUT|TEXTAREA/.test(e.target.tagName)) return; const f = [...e.clipboardData.files].find(f => f.type.startsWith('image/')); if (f) { e.preventDefault(); readImage(URL.createObjectURL(f)); } });
+  view.__qr = { qrScan, readImage, encode, rsCorrect };  // pour le test « local »
   const fileName = () => 'qrcode-' + (payload.replace(/^[a-z]+:\/*/i, '').replace(/[^a-z0-9]+/gi, '-').slice(0, 30).replace(/^-|-$/g, '') || 'qraft');
   const download = (href, name) => { const a = el('a'); a.href = href; a.download = name; document.body.append(a); a.click(); a.remove(); };
   png.onclick = () => { if (cur) download(can.toDataURL('image/png'), fileName() + '.png'); };
-  svg.onclick = () => { if (!cur) return; const n = cur.size + 2 * st.margin; let d = ''; cur.modules.forEach((r, y) => r.forEach((c, x) => { if (c) d += `M${x + st.margin} ${y + st.margin}h1v1h-1z`; }));
-    const s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" width="${n * st.scale}" height="${n * st.scale}" shape-rendering="crispEdges"><rect width="${n}" height="${n}" fill="${st.bg}"/><path fill="${st.fg}" d="${d}"/></svg>`;
+  svg.onclick = () => { if (!cur) return; const n = cur.size + 2 * st.margin, M = st.margin, lb = st.logo ? logoBox(cur) : null; let d = '', dots = '';
+    cur.modules.forEach((r, y) => r.forEach((c, x) => { if (!c || (lb && x >= lb.a && x < lb.a + lb.k && y >= lb.a && y < lb.a + lb.k)) return;
+      if (st.dots === 'carre' || inFinder(x, y, cur.size)) d += `M${x + M} ${y + M}h1v1h-1z`;
+      else dots += st.dots === 'rond' ? `<circle cx="${x + M + .5}" cy="${y + M + .5}" r=".45"/>` : `<rect x="${x + M + .05}" y="${y + M + .05}" width=".9" height=".9" rx=".3"/>`; }));
+    const logo = lb && logoImg?.naturalWidth ? (() => { const f = Math.min(1, lb.k * .86 / Math.max(logoImg.naturalWidth, logoImg.naturalHeight)), lw = logoImg.naturalWidth * f, lh = logoImg.naturalHeight * f, X = lb.a + M;
+      return `<rect x="${X}" y="${X}" width="${lb.k}" height="${lb.k}" fill="${st.bg}"/><image href="${st.logo}" x="${X + (lb.k - lw) / 2}" y="${X + (lb.k - lh) / 2}" width="${lw}" height="${lh}"/>`; })() : '';
+    const s = `<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 ${n} ${n}" width="${n * st.scale}" height="${n * st.scale}"><rect width="${n}" height="${n}" fill="${st.bg}"/><path fill="${st.fg}" d="${d}" shape-rendering="crispEdges"/><g fill="${st.fg}">${dots}</g>${logo}</svg>`;
     download(URL.createObjectURL(new Blob([s], {type: 'image/svg+xml'})), fileName() + '.svg'); };
   cp.onclick = () => { if (!cur) return; can.toBlob(b => navigator.clipboard.write([new ClipboardItem({'image/png': b})]).then(() => toast('Image copiée'), () => toast('Copie impossible'))); };
   keep.onclick = () => { if (!cur) return; if (st.type === 'wifi') { toast('Le Wi-Fi n\'est pas gardé (mot de passe)'); return; } st.recent = [{type: st.type, fields: {...st.fields}, p: payload}, ...st.recent.filter(r => r.p !== payload)].slice(0, 10); save(); drawRecent(); toast('Gardé dans les récents'); };

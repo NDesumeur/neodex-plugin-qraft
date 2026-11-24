@@ -6,6 +6,10 @@ Make crisp pixel QR codes, ready to print or share.
 
 ![Qraft](screenshots/1.jpg)
 
+## Read a QR code (new in 1.1.0)
+
+Read a QR code on screen or in an image (even damaged or rotated), checked centre logo, round or rounded dots.
+
 ## Contents
 
 - Free **Text** and **Link** (`https://` is added if missing).
@@ -26,6 +30,12 @@ Make crisp pixel QR codes, ready to print or share.
 ## Reliability
 
 The encoder follows the ISO 18004 standard (byte mode, versions 1 to 40, Reed-Solomon, 8 masks, the best one picked automatically). Each time it opens, test codes are made then read back by a small built-in decoder, which checks they give back the original text.
+
+## Reading a QR code, logo, dots (1.1.0)
+
+- **READ ON SCREEN**: NeoDex hides for a moment, takes a screenshot and looks for a QR code in it (« Your screen » permission, the screenshot never leaves your PC). **READ AN IMAGE…** does the same with an image, and you can also paste an image (Ctrl+V). The text read shows with **COPY**, **OPEN THE LINK** for a web address and **EDIT HERE** to load it in the form. The reader fixes damaged dots (logo, scratch) and reads straight or rotated codes, not ones photographed at an angle.
+- **Logo in the centre**: an image in the middle of the code; correction then goes to level H, and Qraft reads the drawn code back to tell you whether it stays readable.
+- **Dots**: squares, round or rounded; the three big corner squares stay square so readers can find them. PNG and SVG keep the dots and the logo.
 
 ## Data
 

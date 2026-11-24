@@ -16,5 +16,13 @@ module.exports = async ({ pj, sleep }) => {
   if (!/contraste|plus claire/.test(await pj(`document.querySelector('.qrWarn').textContent`))) throw new Error('pas d\'avertissement');
   await pj(`[...document.querySelectorAll('.qrSw')].find(b => b.title === '#1a1430').click(), 0`);
   await pj(`document.querySelector('[data-type=url]').click(), 0`); await sleep(200);
-  return 'lien, niveau H, Wi-Fi, texte trop long et contraste ok';
+  // la lecture : le code affiché, relu depuis l'aperçu en points ronds ; puis une image avec un logo
+  await pj(`document.querySelector('[data-dots=rond]').click(), 0`); await sleep(200);
+  const rd = await pj(`(async () => { const Q = document.getElementById('qr_canvas').closest('.appWrap').parentNode.__qr, c = document.getElementById('qr_canvas');
+    const r = await Q.readImage(c.toDataURL()); const box = document.querySelector('.qrRead');
+    return {text: r?.text, box: !box.hidden && box.textContent, url: document.querySelector('[data-field=url]').value}; })()`);
+  if (!rd.text || rd.text !== 'https://' + rd.url.replace(/^https?:\/\//, '')) throw new Error('lecture : ' + JSON.stringify(rd));
+  if (!/OUVRIR LE LIEN/.test(rd.box)) throw new Error('résultat lu : ' + rd.box);
+  await pj(`document.querySelector('[data-dots=carre]').click(), 0`); await sleep(100);
+  return 'lecture (points ronds) ok · lien, niveau H, Wi-Fi, texte trop long et contraste ok';
 };
