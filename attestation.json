@@ -1,9 +1,9 @@
 {
   "pluginId": "neodex.qraft",
   "repo": "NDesumeur/neodex-plugin-qraft",
-  "version": "1.0.0",
-  "sha256": "c6b02fb812157a59114882ec1fca5db0374b2d87272cfe8fcf88f48d2ac5dacd",
-  "approvedAt": "2026-11-12T06:35:38.023Z",
+  "version": "1.1.0",
+  "sha256": "acd377ed509757d96866d921b5cd4c69f02c34e065a6e6e55c5bcb1bac2b3864",
+  "approvedAt": "2026-11-24T15:56:20.154Z",
   "neobase": ">=4.0.0",
-  "signature": "kwPunCQHt+5aJZcIwtxk9f+V8SYJoSMhVJ9q8sXSySR6oqr75SXYjnU0Epx+sjpKlyxb5bcU8Nlf7mOOfbQDBg=="
+  "signature": "d86U14Lmwj6LuB1O6BzT/ON/SNBcdJc4JywANlO4QjtMBs9Fn+n7ZLdGG480U6TuntgJ5jqK51Tu855QeH65DQ=="
 }
